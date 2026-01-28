@@ -53,3 +53,7 @@ docker-compose.override.yml
 # OS
 .DS_Store
 Thumbs.db
+
+# Large data files
+*.zip
+l_amat.zip

@@ -3,14 +3,15 @@ from datetime import datetime, timezone
 from typing import Optional, Any, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text, func, or_, and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Amateur, Entity, History, Header, UpdateLog
+from app.models import Amateur, Entity, History, Header, UpdateLog, HistoryCode, OperatorClass, LicenseStatus
 from app.fcc_loader import fcc_loader
+from app.code_loader import load_code_definitions
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -59,26 +60,34 @@ class AddressInfo(BaseModel):
 
 class LicenseInfo(BaseModel):
     """License status and dates."""
-    operator_class: Optional[str] = Field(None, description="License class: E=Extra, G=General, T=Technician, A=Advanced, N=Novice")
-    status: Optional[str] = Field(None, description="License status: A=Active, E=Expired, C=Cancelled")
+    operator_class: Optional[str] = Field(None, description="License class code: E=Extra, G=General, T=Technician, A=Advanced, N=Novice")
+    operator_class_desc: Optional[str] = Field(None, description="License class description")
+    status: Optional[str] = Field(None, description="License status code: A=Active, E=Expired, C=Cancelled")
+    status_desc: Optional[str] = Field(None, description="License status description")
     grant_date: Optional[str] = Field(None, description="Date license was granted (MM/DD/YYYY)")
     expired_date: Optional[str] = Field(None, description="Date license expires (MM/DD/YYYY)")
+    cancellation_date: Optional[str] = Field(None, description="Date license was cancelled (MM/DD/YYYY)")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "operator_class": "E",
+                "operator_class_desc": "Amateur Extra",
                 "status": "A",
+                "status_desc": "Active",
                 "grant_date": "03/15/2023",
-                "expired_date": "03/16/2033"
+                "expired_date": "03/16/2033",
+                "cancellation_date": None
             }
         }
 
 
 class LicenseResult(BaseModel):
     """A single license record."""
+    unique_system_identifier: Optional[str] = Field(None, description="Unique system identifier (USI)")
     call_sign: str = Field(..., description="Amateur radio callsign")
     name: NameInfo = Field(..., description="Licensee name information")
+    attention_line: Optional[str] = Field(None, description="Attention line for address")
     address: AddressInfo = Field(..., description="Licensee address")
     frn: Optional[str] = Field(None, description="FCC Registration Number")
     license: LicenseInfo = Field(..., description="License status and dates")
@@ -398,26 +407,31 @@ async def query_licenses(
             detail="At least one search parameter is required"
         )
 
-    # Build the query - join EN, AM, and HD tables
+    # Build the query - join EN, AM, HD, and code lookup tables
     query = (
         db.query(
+            Entity.unique_system_identifier,
             Entity.call_sign,
             Entity.entity_name,
             Entity.first_name,
             Entity.mi,
             Entity.last_name,
             Entity.suffix,
+            Entity.attention_line,
             Entity.street_address,
             Entity.city,
             Entity.state,
             Entity.zip_code,
             Entity.frn,
             Amateur.operator_class,
+            OperatorClass.description.label("operator_class_desc"),
             Amateur.trustee_callsign,
             Amateur.previous_callsign,
             Header.license_status,
+            LicenseStatus.description.label("license_status_desc"),
             Header.grant_date,
             Header.expired_date,
+            Header.cancellation_date,
         )
         .join(
             Amateur,
@@ -428,6 +442,14 @@ async def query_licenses(
             Header,
             Entity.unique_system_identifier == Header.unique_system_identifier,
             isouter=True
+        )
+        .outerjoin(
+            OperatorClass,
+            Amateur.operator_class == OperatorClass.code
+        )
+        .outerjoin(
+            LicenseStatus,
+            Header.license_status == LicenseStatus.code
         )
         .filter(Entity.entity_type == "L")  # Licensee records only
     )
@@ -456,6 +478,7 @@ async def query_licenses(
     licenses = []
     for row in results:
         licenses.append({
+            "unique_system_identifier": row.unique_system_identifier,
             "call_sign": row.call_sign,
             "name": {
                 "entity_name": row.entity_name,
@@ -464,6 +487,7 @@ async def query_licenses(
                 "last_name": row.last_name,
                 "suffix": row.suffix,
             },
+            "attention_line": row.attention_line,
             "address": {
                 "street": row.street_address,
                 "city": row.city,
@@ -473,9 +497,12 @@ async def query_licenses(
             "frn": row.frn,
             "license": {
                 "operator_class": row.operator_class,
+                "operator_class_desc": row.operator_class_desc,
                 "status": row.license_status,
+                "status_desc": row.license_status_desc,
                 "grant_date": row.grant_date,
                 "expired_date": row.expired_date,
+                "cancellation_date": row.cancellation_date,
             },
             "trustee_callsign": row.trustee_callsign,
             "previous_callsign": row.previous_callsign,
@@ -487,6 +514,370 @@ async def query_licenses(
         "limit": limit,
         "results": licenses
     }
+
+
+def _query_by_callsign(db: Session, call_sign: str):
+    """Query the database for an exact callsign match and return formatted results."""
+    query = (
+        db.query(
+            Entity.unique_system_identifier,
+            Entity.call_sign,
+            Entity.entity_name,
+            Entity.first_name,
+            Entity.mi,
+            Entity.last_name,
+            Entity.suffix,
+            Entity.attention_line,
+            Entity.street_address,
+            Entity.city,
+            Entity.state,
+            Entity.zip_code,
+            Entity.frn,
+            Amateur.operator_class,
+            OperatorClass.description.label("operator_class_desc"),
+            Amateur.trustee_callsign,
+            Amateur.previous_callsign,
+            Header.license_status,
+            LicenseStatus.description.label("license_status_desc"),
+            Header.grant_date,
+            Header.expired_date,
+            Header.cancellation_date,
+        )
+        .join(
+            Amateur,
+            Entity.unique_system_identifier == Amateur.unique_system_identifier,
+            isouter=True
+        )
+        .join(
+            Header,
+            Entity.unique_system_identifier == Header.unique_system_identifier,
+            isouter=True
+        )
+        .outerjoin(
+            OperatorClass,
+            Amateur.operator_class == OperatorClass.code
+        )
+        .outerjoin(
+            LicenseStatus,
+            Header.license_status == LicenseStatus.code
+        )
+        .filter(Entity.entity_type == "L")
+        .filter(func.upper(Entity.call_sign) == call_sign.upper())
+    )
+    results = query.all()
+    licenses = []
+    for row in results:
+        licenses.append({
+            "unique_system_identifier": row.unique_system_identifier,
+            "call_sign": row.call_sign,
+            "name": {
+                "entity_name": row.entity_name,
+                "first_name": row.first_name,
+                "mi": row.mi,
+                "last_name": row.last_name,
+                "suffix": row.suffix,
+            },
+            "attention_line": row.attention_line,
+            "address": {
+                "street": row.street_address,
+                "city": row.city,
+                "state": row.state,
+                "zip_code": row.zip_code,
+            },
+            "frn": row.frn,
+            "license": {
+                "operator_class": row.operator_class,
+                "operator_class_desc": row.operator_class_desc,
+                "status": row.license_status,
+                "status_desc": row.license_status_desc,
+                "grant_date": row.grant_date,
+                "expired_date": row.expired_date,
+                "cancellation_date": row.cancellation_date,
+            },
+            "trustee_callsign": row.trustee_callsign,
+            "previous_callsign": row.previous_callsign,
+        })
+    return licenses
+
+
+@router.get(
+    "/query/call",
+    response_model=QueryResponse,
+    summary="Query by callsign",
+    description="Look up a specific callsign and return matching results as JSON.",
+)
+async def query_call_json(
+    call_sign: str = Query(..., description="Full callsign to look up"),
+    db: Session = Depends(get_db),
+):
+    """Query the FCC database by exact callsign and return JSON."""
+    licenses = _query_by_callsign(db, call_sign)
+    return {
+        "total": len(licenses),
+        "offset": 0,
+        "limit": len(licenses),
+        "results": licenses
+    }
+
+
+def _format_license_text(lic: dict) -> str:
+    """Format a single license record as text."""
+    name = lic["name"]["entity_name"] or ""
+    attention = lic.get("attention_line") or ""
+    addr = lic["address"]
+    street = addr.get("street") or ""
+    city = addr.get("city") or ""
+    state = addr.get("state") or ""
+    zip_code = addr.get("zip_code") or ""
+    address_line = f"{street} {city} {state} {zip_code}".strip()
+    license_info = lic["license"]
+    # Format class with description if available
+    op_class = license_info.get('operator_class') or ''
+    op_class_desc = license_info.get('operator_class_desc') or ''
+    class_str = f"{op_class} ({op_class_desc})" if op_class_desc else op_class
+    # Format status with description if available
+    status = license_info.get('status') or ''
+    status_desc = license_info.get('status_desc') or ''
+    status_str = f"{status} ({status_desc})" if status_desc else status
+    lines = [
+        f"USI:      {lic.get('unique_system_identifier') or ''}",
+        f"FRN:      {lic.get('frn') or ''}",
+        f"Name:     {name}",
+    ]
+    if attention:
+        lines.append(f"Attn:     {attention}")
+    lines.extend([
+        f"Address:  {address_line}",
+        f"Class:    {class_str}",
+        f"Status:   {status_str}",
+        f"Granted:  {license_info.get('grant_date') or ''}",
+        f"Expires:  {license_info.get('expired_date') or ''}",
+    ])
+    if license_info.get('cancellation_date'):
+        lines.append(f"Cancelled: {license_info.get('cancellation_date')}")
+    lines.append(f"Previous: {lic.get('previous_callsign') or ''}")
+    return "\n".join(lines)
+
+
+@router.get(
+    "/query/callastext",
+    response_class=PlainTextResponse,
+    summary="Query by callsign (text)",
+    description="Look up a specific callsign and return matching results as plain text.",
+)
+async def query_call_text(
+    call_sign: str = Query(..., description="Full callsign to look up"),
+    db: Session = Depends(get_db),
+):
+    """Query the FCC database by exact callsign and return plain text."""
+    licenses = _query_by_callsign(db, call_sign)
+
+    active = [l for l in licenses if l["license"].get("status") == "A"]
+    inactive = [l for l in licenses if l["license"].get("status") != "A"]
+
+    sections = []
+    sections.append("Active Licenses:\n")
+    if active:
+        sections.append("\n\n".join(_format_license_text(l) for l in active))
+    sections.append("\nInactive Licenses:\n")
+    if inactive:
+        sections.append("\n\n".join(_format_license_text(l) for l in inactive))
+
+    return "\n".join(sections) + "\n"
+
+
+class HistoryEntry(BaseModel):
+    """A single history entry."""
+    callsign: Optional[str] = Field(None, description="Callsign")
+    log_date: Optional[str] = Field(None, description="Date of the history event")
+    code: Optional[str] = Field(None, description="History event code")
+    description: Optional[str] = Field(None, description="Description of the history event")
+
+    class Config:
+        from_attributes = True
+
+
+class HistoryByUsiResponse(BaseModel):
+    """Response model for history queries by USI."""
+    total: int = Field(..., description="Total number of history entries")
+    unique_system_identifier: str = Field(..., description="The unique system identifier queried")
+    results: List[HistoryEntry] = Field(..., description="List of history entries")
+
+
+class HistoryByFrnResponse(BaseModel):
+    """Response model for history queries by FRN."""
+    total: int = Field(..., description="Total number of history entries")
+    frn: str = Field(..., description="The FRN queried")
+    unique_system_identifiers: List[str] = Field(..., description="USIs associated with this FRN")
+    results: List[HistoryEntry] = Field(..., description="List of history entries")
+
+
+@router.get(
+    "/query/history/usi",
+    response_model=HistoryByUsiResponse,
+    summary="Query license history by USI",
+    description="Look up license history by unique_system_identifier.",
+)
+async def query_history_by_usi(
+    usi: str = Query(..., description="Unique system identifier to look up history for"),
+    db: Session = Depends(get_db),
+):
+    """Query the FCC database for license history by unique_system_identifier."""
+    results = (
+        db.query(
+            History.callsign,
+            History.log_date,
+            History.code,
+            HistoryCode.description,
+        )
+        .outerjoin(HistoryCode, History.code == HistoryCode.code)
+        .filter(History.unique_system_identifier == usi)
+        .order_by(History.log_date.desc())
+        .all()
+    )
+
+    entries = [
+        {
+            "callsign": row.callsign,
+            "log_date": row.log_date,
+            "code": row.code,
+            "description": row.description,
+        }
+        for row in results
+    ]
+
+    return {
+        "total": len(entries),
+        "unique_system_identifier": usi,
+        "results": entries
+    }
+
+
+@router.get(
+    "/query/history/frn",
+    response_model=HistoryByFrnResponse,
+    summary="Query license history by FRN",
+    description="Look up license history for all licenses associated with an FRN.",
+)
+async def query_history_by_frn(
+    frn: str = Query(..., description="FCC Registration Number to look up history for"),
+    db: Session = Depends(get_db),
+):
+    """Query the FCC database for license history by FRN (all associated licenses)."""
+    # First, find all unique_system_identifiers associated with this FRN
+    usi_results = (
+        db.query(Entity.unique_system_identifier)
+        .filter(Entity.frn == frn)
+        .distinct()
+        .all()
+    )
+
+    usis = [row.unique_system_identifier for row in usi_results]
+
+    if not usis:
+        return {
+            "total": 0,
+            "frn": frn,
+            "unique_system_identifiers": [],
+            "results": []
+        }
+
+    # Query history for all associated USIs
+    results = (
+        db.query(
+            History.callsign,
+            History.log_date,
+            History.code,
+            HistoryCode.description,
+        )
+        .outerjoin(HistoryCode, History.code == HistoryCode.code)
+        .filter(History.unique_system_identifier.in_(usis))
+        .order_by(History.log_date.desc())
+        .all()
+    )
+
+    entries = [
+        {
+            "callsign": row.callsign,
+            "log_date": row.log_date,
+            "code": row.code,
+            "description": row.description,
+        }
+        for row in results
+    ]
+
+    return {
+        "total": len(entries),
+        "frn": frn,
+        "unique_system_identifiers": usis,
+        "results": entries
+    }
+
+
+@router.get(
+    "/codes/history",
+    summary="List history codes",
+    description="Get all history code definitions.",
+)
+async def list_history_codes(
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+):
+    """List all history code definitions."""
+    total = db.query(HistoryCode).count()
+    codes = db.query(HistoryCode).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "codes": [{"code": c.code, "description": c.description} for c in codes]
+    }
+
+
+@router.get(
+    "/codes/operator-class",
+    summary="List operator class codes",
+    description="Get all operator class code definitions.",
+)
+async def list_operator_classes(db: Session = Depends(get_db)):
+    """List all operator class definitions."""
+    codes = db.query(OperatorClass).all()
+    return {
+        "total": len(codes),
+        "codes": [{"code": c.code, "description": c.description} for c in codes]
+    }
+
+
+@router.get(
+    "/codes/license-status",
+    summary="List license status codes",
+    description="Get all license status code definitions.",
+)
+async def list_license_statuses(db: Session = Depends(get_db)):
+    """List all license status definitions."""
+    codes = db.query(LicenseStatus).all()
+    return {
+        "total": len(codes),
+        "codes": [{"code": c.code, "description": c.description} for c in codes]
+    }
+
+
+@router.post(
+    "/codes/reload",
+    summary="Reload code definitions",
+    description="Reload all code definitions from the ULS definitions file.",
+)
+async def reload_codes():
+    """Reload code definitions from file."""
+    try:
+        counts = load_code_definitions()
+        return {
+            "message": "Code definitions reloaded successfully",
+            "counts": counts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post(

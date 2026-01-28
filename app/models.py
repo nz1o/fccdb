@@ -155,6 +155,31 @@ class UpdateLog(Base):
     error_message = Column(String(500))
 
 
+# Code lookup tables
+class HistoryCode(Base):
+    """History code definitions from FCC ULS"""
+    __tablename__ = "uls_history_code"
+
+    code = Column(String(10), primary_key=True)
+    description = Column(String(255))
+
+
+class OperatorClass(Base):
+    """Operator class code definitions"""
+    __tablename__ = "uls_operator_class"
+
+    code = Column(String(10), primary_key=True)
+    description = Column(String(100))
+
+
+class LicenseStatus(Base):
+    """License status code definitions"""
+    __tablename__ = "uls_license_status"
+
+    code = Column(String(10), primary_key=True)
+    description = Column(String(100))
+
+
 # Staging tables - same structure but with _tmp_ prefix
 class TmpAmateur(Base):
     """Staging table for Amateur data"""

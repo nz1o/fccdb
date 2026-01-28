@@ -16,6 +16,9 @@ This service automatically downloads and maintains a local PostgreSQL copy of th
 - **Full Database**: Contains all US amateur radio licenses with associated data
 - **Wildcard Search**: Query using `*` (any characters) and `?` (single character) wildcards
 - **Multiple Query Fields**: Search by callsign, name, location, license class, and more
+- **Code Lookups**: Human-readable descriptions for operator classes, license statuses, and 463+ history event codes
+- **License History**: Query license history by USI or FRN with event descriptions
+- **Multiple Output Formats**: JSON and plain text output options
 - **RESTful API**: Clean JSON API with interactive Swagger documentation
 - **Containerized**: Easy deployment with Docker Compose
 - **Staging Pattern**: Uses staging tables to ensure zero-downtime updates
@@ -148,6 +151,7 @@ Environment variables in `.env`:
 | `API_INTERFACE` | `0.0.0.0` | API binding interface |
 | `API_PORT` | `8010` | API port |
 | `AUTO_UPDATE_DAYS` | `7` | Days between automatic FCC data refreshes |
+| `ULS_CODE_DEFINITIONS_FILE` | `/app/uls_definitions/uls_code_definitions_20240718.txt` | Path to ULS code definitions file |
 
 ## API Endpoints
 
@@ -205,6 +209,7 @@ curl "http://localhost:8010/api/query?last_name=Smith&state=MA"
   "limit": 100,
   "results": [
     {
+      "unique_system_identifier": "1234567",
       "call_sign": "W1AW",
       "name": {
         "entity_name": "ARRL INC",
@@ -213,6 +218,7 @@ curl "http://localhost:8010/api/query?last_name=Smith&state=MA"
         "last_name": null,
         "suffix": null
       },
+      "attention_line": null,
       "address": {
         "street": "225 MAIN ST",
         "city": "NEWINGTON",
@@ -222,9 +228,12 @@ curl "http://localhost:8010/api/query?last_name=Smith&state=MA"
       "frn": "0001430385",
       "license": {
         "operator_class": "E",
+        "operator_class_desc": "Amateur Extra",
         "status": "A",
+        "status_desc": "Active",
         "grant_date": "03/15/2023",
-        "expired_date": "03/16/2033"
+        "expired_date": "03/16/2033",
+        "cancellation_date": null
       },
       "trustee_callsign": null,
       "previous_callsign": null
@@ -352,6 +361,224 @@ GET /api/fields
 
 List all fields that can be used in queries with descriptions and examples.
 
+### Query by Callsign (JSON)
+
+```
+GET /api/query/call?call_sign=<callsign>
+```
+
+Lookup a specific callsign and return results as JSON. This is a simplified endpoint for exact callsign lookups.
+
+**Example:**
+
+```bash
+curl "http://localhost:8010/api/query/call?call_sign=W1AW"
+```
+
+### Query by Callsign (Text)
+
+```
+GET /api/query/callastext?call_sign=<callsign>
+```
+
+Lookup a specific callsign and return results as plain text, organized by active/inactive status.
+
+**Example:**
+
+```bash
+curl "http://localhost:8010/api/query/callastext?call_sign=W1AW"
+```
+
+**Example Response:**
+
+```
+Active Licenses:
+
+USI:      1234567
+FRN:      0001430385
+Name:     ARRL INC
+Address:  225 MAIN ST NEWINGTON CT 061111400
+Class:    E (Amateur Extra)
+Status:   A (Active)
+Granted:  03/15/2023
+Expires:  03/16/2033
+Previous:
+
+Inactive Licenses:
+
+```
+
+### Query License History by USI
+
+```
+GET /api/query/history/usi?usi=<unique_system_identifier>
+```
+
+Get license history for a specific unique system identifier.
+
+**Example:**
+
+```bash
+curl "http://localhost:8010/api/query/history/usi?usi=1234567"
+```
+
+**Example Response:**
+
+```json
+{
+  "total": 3,
+  "unique_system_identifier": "1234567",
+  "results": [
+    {
+      "callsign": "W1AW",
+      "log_date": "01/15/2023",
+      "code": "LIISS",
+      "description": "License Issued"
+    },
+    {
+      "callsign": "W1AW",
+      "log_date": "01/10/2023",
+      "code": "APGRT",
+      "description": "Application Granted"
+    }
+  ]
+}
+```
+
+### Query License History by FRN
+
+```
+GET /api/query/history/frn?frn=<frn>
+```
+
+Get license history for all licenses associated with an FCC Registration Number (FRN).
+
+**Example:**
+
+```bash
+curl "http://localhost:8010/api/query/history/frn?frn=0001430385"
+```
+
+**Example Response:**
+
+```json
+{
+  "total": 5,
+  "frn": "0001430385",
+  "unique_system_identifiers": ["1234567", "2345678"],
+  "results": [
+    {
+      "callsign": "W1AW",
+      "log_date": "01/15/2023",
+      "code": "LIISS",
+      "description": "License Issued"
+    }
+  ]
+}
+```
+
+### List History Codes
+
+```
+GET /api/codes/history
+```
+
+List all history code definitions. Supports pagination with `limit` and `offset` parameters.
+
+**Example:**
+
+```bash
+curl "http://localhost:8010/api/codes/history?limit=10"
+```
+
+**Example Response:**
+
+```json
+{
+  "total": 463,
+  "offset": 0,
+  "limit": 10,
+  "codes": [
+    {"code": "APGRT", "description": "Application Granted"},
+    {"code": "LIISS", "description": "License Issued"},
+    {"code": "LIREN", "description": "License Renewed"}
+  ]
+}
+```
+
+### List Operator Class Codes
+
+```
+GET /api/codes/operator-class
+```
+
+List all operator class code definitions.
+
+**Example Response:**
+
+```json
+{
+  "total": 6,
+  "codes": [
+    {"code": "E", "description": "Amateur Extra"},
+    {"code": "G", "description": "General"},
+    {"code": "T", "description": "Technician"},
+    {"code": "P", "description": "Technician Plus"},
+    {"code": "A", "description": "Advanced"},
+    {"code": "N", "description": "Novice"}
+  ]
+}
+```
+
+### List License Status Codes
+
+```
+GET /api/codes/license-status
+```
+
+List all license status code definitions.
+
+**Example Response:**
+
+```json
+{
+  "total": 4,
+  "codes": [
+    {"code": "A", "description": "Active"},
+    {"code": "C", "description": "Cancelled"},
+    {"code": "E", "description": "Expired"},
+    {"code": "T", "description": "Terminated"}
+  ]
+}
+```
+
+### Reload Code Definitions
+
+```
+POST /api/codes/reload
+```
+
+Reload all code definitions from the ULS definitions file.
+
+**Example:**
+
+```bash
+curl -X POST "http://localhost:8010/api/codes/reload"
+```
+
+**Example Response:**
+
+```json
+{
+  "message": "Code definitions reloaded successfully",
+  "counts": {
+    "history_codes": 463,
+    "operator_classes": 6,
+    "license_statuses": 4
+  }
+}
+```
+
 ## Data Source
 
 Data is sourced from the FCC Universal Licensing System (ULS):
@@ -371,23 +598,33 @@ Data is sourced from the FCC Universal Licensing System (ULS):
 | `pubacc_hs` | History data (license history events) |
 | `update_log` | Tracks database update history |
 
+### Code Lookup Tables
+
+| Table | Description |
+|-------|-------------|
+| `uls_history_code` | History event code definitions (463+ codes) |
+| `uls_operator_class` | Operator class code definitions (6 codes) |
+| `uls_license_status` | License status code definitions (4 codes) |
+
 ### License Classes
 
-| Code | Class |
-|------|-------|
-| `E` | Extra |
-| `G` | General |
-| `T` | Technician |
-| `A` | Advanced (grandfathered) |
-| `N` | Novice (grandfathered) |
+| Code | Class | Description |
+|------|-------|-------------|
+| `E` | Extra | Highest class, all privileges |
+| `G` | General | HF privileges with some restrictions |
+| `T` | Technician | Entry level, primarily VHF/UHF |
+| `P` | Technician Plus | Technician with Element 1 credit |
+| `A` | Advanced | Grandfathered, no longer issued |
+| `N` | Novice | Grandfathered, no longer issued |
 
 ### License Status
 
-| Code | Status |
-|------|--------|
-| `A` | Active |
-| `E` | Expired |
-| `C` | Cancelled |
+| Code | Status | Description |
+|------|--------|-------------|
+| `A` | Active | License is currently valid |
+| `E` | Expired | License has expired |
+| `C` | Cancelled | License was cancelled |
+| `T` | Terminated | License was terminated |
 
 ## Docker Commands
 

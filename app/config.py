@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Batch size for database inserts
     db_chunk_size: int = 100000
 
+    # ULS code definitions file path
+    uls_code_definitions_file: str = "/app/uls_definitions/uls_code_definitions_20240718.txt"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

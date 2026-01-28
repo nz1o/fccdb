@@ -31,6 +31,9 @@ services:
       API_INTERFACE: ${API_INTERFACE:-0.0.0.0}
       API_PORT: ${API_PORT:-8010}
       AUTO_UPDATE_DAYS: ${AUTO_UPDATE_DAYS:-7}
+      ULS_CODE_DEFINITIONS_FILE: /app/uls_definitions/uls_code_definitions_20240718.txt
+    volumes:
+      - ./uls_definitions:/app/uls_definitions:ro
     ports:
       - "${API_PORT:-8010}:8010"
     networks:
