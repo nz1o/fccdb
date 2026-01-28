@@ -51,7 +51,26 @@ git clone https://github.com/yourusername/fccdb.git
 cd fccdb
 ```
 
-### Step 2: Configure Environment
+### Step 2: Download ULS Code Definitions
+
+Download the FCC ULS code definitions file and place it in the `uls_definitions` directory:
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p uls_definitions
+
+# Download the ULS code definitions file
+curl -L "https://www.fcc.gov/sites/default/files/uls_code_definitions_20240718.txt" \
+  -o uls_definitions/uls_code_definitions_20240718.txt
+
+# Optional: Download the database definitions SQL file
+curl -L "https://www.fcc.gov/sites/default/files/public_access_database_definitions_sql_20250417.txt" \
+  -o uls_definitions/public_access_database_definitions_sql_20250417.txt
+```
+
+These files contain the code definitions used to translate history codes, operator classes, and license statuses into human-readable descriptions.
+
+### Step 3: Configure Environment
 
 ```bash
 # Copy the example environment file
@@ -80,7 +99,7 @@ nano .env   # or use your preferred text editor
 | `API_PORT` | `8010` | If port 8010 is already in use |
 | `AUTO_UPDATE_DAYS` | `7` | To change how often data refreshes |
 
-### Step 3: Start the Service
+### Step 4: Start the Service
 
 ```bash
 # Start the containers in detached mode
@@ -94,7 +113,7 @@ You should see two containers running:
 - `fccdb-postgres` - The PostgreSQL database
 - `fccdb-api` - The FastAPI application
 
-### Step 4: Wait for Initial Data Load
+### Step 5: Wait for Initial Data Load
 
 The service automatically downloads FCC data (~500 MB) approximately 30 seconds after startup. This initial load takes 5-15 minutes depending on your internet speed and system performance.
 
@@ -115,7 +134,7 @@ INFO - Loaded 1,572,538 entity records
 INFO - Update complete: 786,269 amateur records loaded
 ```
 
-### Step 5: Verify the Installation
+### Step 6: Verify the Installation
 
 Once the data load completes, verify everything is working:
 
@@ -130,7 +149,7 @@ curl http://localhost:8010/api/stats
 curl "http://localhost:8010/api/query?call_sign=W1AW"
 ```
 
-### Step 6: Access the API Documentation
+### Step 7: Access the API Documentation
 
 Open your web browser and navigate to:
 
